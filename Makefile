@@ -753,7 +753,7 @@ exit.h env.h prot.h open.h wait.h readwrite.h stralloc.h gen_alloc.h \
 alloc.h buffer.h error.h strerr.h sgetopt.h subgetopt.h pathexec.h \
 socket.h uint16.h ndelay.h remoteinfo.h stralloc.h uint16.h rules.h \
 stralloc.h sig.h dns.h stralloc.h iopause.h taia.h tai.h uint64.h \
-taia.h
+taia.h uint32.h
 	./compile tcpserver.c
 
 time.a: \

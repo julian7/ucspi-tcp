@@ -2,6 +2,7 @@
 #include <sys/param.h>
 #include <netdb.h>
 #include "uint16.h"
+#include "uint32.h"
 #include "str.h"
 #include "byte.h"
 #include "fmt.h"
@@ -242,6 +243,7 @@ void usage(void)
 tcpserver: usage: tcpserver \
 [ -1UXpPhHrRoOdDqQv ] \
 [ -c limit ] \
+[ -s perip limit ] \
 [ -x rules.cdb ] \
 [ -B banner ] \
 [ -g gid ] \
@@ -254,7 +256,23 @@ host port program",0);
 }
 
 unsigned long limit = 40;
+unsigned long periplimit = 0;
 unsigned long numchildren = 0;
+
+typedef struct
+{
+  pid_t pid;
+  int offset;
+} connections;
+
+typedef struct
+{
+  uint32 ipaddr;
+  unsigned long num;
+} ipchildren;
+
+connections *children;
+ipchildren *numipchildren;
 
 int flag1 = 0;
 unsigned long backlog = 20;
@@ -278,6 +296,7 @@ void sigchld()
 {
   int wstat;
   int pid;
+  int i;
  
   while ((pid = wait_nohang(&wstat)) > 0) {
     if (verbosity >= 2) {
@@ -286,6 +305,12 @@ void sigchld()
       strerr_warn4("tcpserver: end ",strnum," status ",strnum2,0);
     }
     if (numchildren) --numchildren; printstatus();
+    for (i=0;i<limit;++i)
+      if (children[i].pid == pid) {
+        children[i].pid=0;
+        numipchildren[children[i].offset].num--;
+        break;
+      }
   }
 }
 
@@ -300,10 +325,11 @@ main(int argc,char **argv)
   int s;
   int t;
  
-  while ((opt = getopt(argc,argv,"dDvqQhHrR1UXx:t:u:g:l:b:B:c:pPoO")) != opteof)
+  while ((opt = getopt(argc,argv,"dDvqQhHrR1UXx:t:u:g:l:b:B:c:s:pPoO")) != opteof)
     switch(opt) {
       case 'b': scan_ulong(optarg,&backlog); break;
       case 'c': scan_ulong(optarg,&limit); break;
+      case 's': scan_ulong(optarg,&periplimit); break;
       case 'X': flagallownorules = 1; break;
       case 'x': fnrules = optarg; break;
       case 'B': banner = optarg; break;
@@ -334,6 +360,11 @@ main(int argc,char **argv)
 
   if (!verbosity)
     buffer_2->fd = -1;
+
+  if (!periplimit)
+    periplimit = limit;
+  if (limit<periplimit)
+    strerr_die2x(111,FATAL,"periplimit must be smaller than or equal to connection limit");
  
   hostname = *argv++;
   if (!hostname) usage();
@@ -358,6 +389,12 @@ main(int argc,char **argv)
   sig_catch(sig_term,sigterm);
   sig_ignore(sig_pipe);
  
+  if (!(numipchildren = (ipchildren*)malloc(sizeof(ipchildren)*limit)))
+    strerr_die2x(111,FATAL,"out of memory");
+  byte_zero(numipchildren,sizeof(ipchildren)*limit);
+  if (!(children = (connections*)malloc(sizeof(connections)*limit)))
+    strerr_die2x(111,FATAL,"out of memory");
+  byte_zero(children,sizeof(connections)*limit);
   if (!stralloc_copys(&tmp,hostname))
     strerr_die2x(111,FATAL,"out of memory");
   if (dns_ip4_qualify(&addresses,&fqdn,&tmp) == -1)
@@ -396,6 +433,13 @@ main(int argc,char **argv)
   printstatus();
  
   for (;;) {
+    uint32 ipaddr;
+    pid_t pid;
+    int i;
+    int lastempty = 0;
+    int freechild = 0;
+    ipchildren *ipcount;
+
     while (numchildren >= limit) sig_pause();
 
     sig_unblock(sig_child);
@@ -403,9 +447,43 @@ main(int argc,char **argv)
     sig_block(sig_child);
 
     if (t == -1) continue;
+
+    for (i=0;i<limit;++i) {
+      if (children[i].pid == 0) {
+        freechild = i;
+        break;
+      }
+    }
+    uint32_unpack(remoteip,&ipaddr);
+    for (i=0;i<limit;++i) {
+      ipcount = &numipchildren[i];
+      if (!ipcount->ipaddr || !ipcount->num)
+        lastempty = i;
+      else if (ipcount->ipaddr == ipaddr) {
+        ++ipcount->num;
+        break;
+      }
+    }
+    if (i == limit) {
+      if (lastempty) {
+        i = lastempty;
+        ipcount = &numipchildren[i];
+        ipcount->ipaddr = ipaddr;
+        ipcount->num = 1;
+      } else
+        /* never reached */
+        strerr_die2x(111,DROP,"internal problem");
+    }
+    if (ipcount->num > periplimit) {
+      remoteipstr[ip4_fmt(remoteipstr,remoteip)] = 0;
+      strerr_warn3(DROP, "per ip limit reached for ", remoteipstr, 0);
+      close(t);
+      --ipcount->num;
+      continue;
+    }
     ++numchildren; printstatus();
  
-    switch(fork()) {
+    switch(pid = fork()) {
       case 0:
         close(s);
         doit(t);
@@ -420,6 +498,10 @@ main(int argc,char **argv)
       case -1:
         strerr_warn2(DROP,"unable to fork: ",&strerr_sys);
         --numchildren; printstatus();
+        break;
+      default:
+      	children[freechild].pid = pid;
+	children[freechild].offset = i;
     }
     close(t);
   }
