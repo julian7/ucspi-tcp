@@ -436,7 +436,7 @@ main(int argc,char **argv)
     uint32 ipaddr;
     pid_t pid;
     int i;
-    int lastempty = 0;
+    int lastempty = -1;
     int freechild = 0;
     ipchildren *ipcount;
 
@@ -465,7 +465,7 @@ main(int argc,char **argv)
       }
     }
     if (i == limit) {
-      if (lastempty) {
+      if (lastempty >= 0) {
         i = lastempty;
         ipcount = &numipchildren[i];
         ipcount->ipaddr = ipaddr;
